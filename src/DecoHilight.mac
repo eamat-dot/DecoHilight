@@ -1,0 +1,133 @@
+//---------------------------------------------------------------------------
+//	秀丸用マクロ (DecoHilight.mac)
+//	編集中ファイルの強調表示などの設定を.Hilight形式で書き出して装飾する
+//
+//	  環境	:	秀丸 ver 7.11 / HmJre.dll ver 2.03
+//
+//	  Author:	 eamat.
+//	  Create	 2009.07.19
+//	  LastUpdate 2009.07.23
+//---------------------------------------------------------------------------
+
+$HenkanDir = hidemarudir+"\\Henkan";
+$tmpfile   = getenv("TEMP") + "\\~cotmp.hilight";
+$mymacrodir= currentmacrodirectory + "\\DecoHilight";
+$inifile   = $mymacrodir + "\\" + leftstr(currentmacrobasename,strstr(currentmacrobasename,".mac")) + ".ini";
+
+call initialize;
+call main;
+call finalize;
+endmacro;
+
+main:
+	// 編集中のファイルが 強調表示定義ファイルっぽかったら直接装飾する。
+	// 違う場合は 新規秀丸に設定を書き出して装飾する。
+
+	call BeginCheck;	##hilight = ##return;
+	if (!##hilight) {
+		call MkHedder;			$$hedder = $$return;
+		call MkOutputKindFlg;	##save	 = ##return;
+		call hilightOutput $tmpfile, ##save;
+	}
+	call Decorate;
+	if (!##hilight)  {
+		gofiletop;
+		insert $$hedder;
+	}
+return;
+
+//.----- 初期化・後始末 ------------------------------------------------------------
+initialize: 	// 初期化
+	setcompatiblemode 0x20F;
+//	disabledraw;
+	$searchbuffer=searchbuffer;
+	#searchoption=searchoption;
+	if (800 <= version)	{
+		#searchoption2=searchoption2;
+		disablehistory 0xFF;
+	}
+return;
+
+finalize:		// 後始末
+	if (800 > version)	setsearch $searchbuffer, #searchoption;
+	else				setsearch $searchbuffer, #searchoption, #searchoption2;
+	escape;
+	escapeinselect;
+	title 0;
+	enabledraw;
+return;
+
+BeginCheck: 		// 戻り値 1:hilightっぽいファイル 0:hilightじゃないファイル
+	// ファイルタイプチェック
+	if (filetype != ".hilight")   {
+		searchdown "^[0-9]+,.+|^/<.*>", regular,nohilight,loop;
+		if (!result)	return 0;
+	}
+return 1;
+
+MkHedder:			//	書き出しファイルTOPに付けるヘッダを作成
+	$$deco = "//==========================================================================\r\n";
+	if (""==currentconfigset)	$$cfgset = "（共通）";
+	$$cfgset=" ["+currentconfigset+"] ";
+	if (configstate & 0x01) $$cfgset=$$cfgset+"（一時的な設定）";
+return $$deco + "//  " + basename2 + $$cfgset + " の強調表示 \r\n" + $$deco + "\r\n";
+
+MkOutputKindFlg:	//	書き出す 強調表示 などの種類のフラグを返す
+
+	 #Hilight  = getininum($inifile,"hilightOutput","Hilight");
+	##ColorSet = getininum($inifile,"hilightOutput","ColorSet");
+	##HilightM = getininum($inifile,"hilightOutput","HilightM");
+	##TreeWord = getininum($inifile,"hilightOutput","TreeWord");
+	##Define   = getininum($inifile,"hilightOutput","Define");
+
+	##hm = getconfig("ColorComment");	// 21:C言語(#ifdef有効) 27:ユーザー定義
+	if ( #Hilight == 2) 	 #Hilight  = getconfig("Hilight");
+	if (##TreeWord== 2) 	##TreeWord = getconfig("HilightList")&0x00010000;
+	if (##HilightM== 2) {	if (27 != ##hm) 	##HilightM=0;}
+	if (##Define  == 2) {	if (21 != ##HM) 	##Define  =0;}
+
+	if ( #Hilight)		##flg = 		0x01;
+	if (##ColorSet) 	##flg = ##flg | 0x08;
+	if (##HilightM) 	##flg = ##flg | 0x02;
+	if (##TreeWord) 	##flg = ##flg | 0x04;
+	if (##Define)		##flg = ##flg | 0x10;
+return ##flg;
+
+hilightOutput:		// 編集中ファイルの強調表示などの設定を新規秀丸に書き出す
+	//	$$1   = 一時ファイルパス
+	//	##2   = 出力に含む 強調表示情報
+
+	savehilight $$1, ##2;
+	openfile "";
+	insertfile $$1;
+	run getenv("COMSPEC") + " /C del " + $$1 + " >nul";
+
+/*
+	// ソートモジュールがある時はフラグ昇順でソートする。
+	if (#Hilight)	{
+		if (existfile($HenkanDir+"\\Sort.hmf")) 			$$sort=$HenkanDir+"\\Sort.hmf";
+		if (existfile(hidemarudir+"\\Sort.hmf"))			$$sort=hidemarudir+"\\Sort.hmf";
+		if (existfile(macrodir+"\\Sort.hmf"))				$$sort=macrodir+"\\Sort.hmf";
+		if (existfile($mymacrodir+"\\Sort.hmf"))			$$sort=$mymacrodir+"\\Sort.hmf";
+		if (existfile(currentmacrodirectory+"\\Sort.hmf"))	$$sort=currentmacrodirectory+"\\Sort.hmf";
+		if (existfile($$sort))	{
+			gofiletop;
+			beginsel;
+			searchdown ".*(?=^/<)",regular;
+			if (!result)	gofileend;
+			filter $$sort , "Sort" , "00010";
+			escape;
+			gofiletop;
+		}
+	}
+*/
+return;
+
+Decorate:			// 強調ファイル装飾
+	##h = hidemaruhandle(0);
+	setactivehidemaru ##h;
+	execmacro $mymacrodir+"\\CommentingHilight.mac";
+	setactivehidemaru ##h;
+	execmacro $mymacrodir+"\\ColorlingHilight.mac";
+return;
+

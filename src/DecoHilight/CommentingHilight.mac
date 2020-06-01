@@ -1,0 +1,552 @@
+//----------------------------------------------------------------
+//	秀丸用マクロ (CommentingHilight.mac)
+//	編集中の .Hilightファイルにコメントを入れる
+//
+//	  環境	:	秀丸 ver 8.91 / HmJre.dll ver 5.06
+//
+//	  Author:	 eamat. 	 http://www6.atwiki.jp/eamat/
+//	  Create	 2009.07.20
+//	  LastUpdate 2020.05.31	 /<ColorSetEx> の記述内容変更に伴い検索パターンを更新
+//----------------------------------------------------------------
+
+//$inifile=leftstr(currentmacrofilename,strstr(currentmacrofilename,".mac")) + ".ini";
+$inifile=currentmacrodirectory+"\\DecoHilight.ini";
+#debug = 1;
+
+call initialize;
+call main;
+call finalize;
+endmacro;
+
+main:
+	debuginfo #debug;
+	##t=tickcount;
+	call InitBuf;
+	debuginfo "InitBuf : "+str(tickcount-##t);
+	call BeginCheck;
+	if (##return)	{
+		while(##i<=#iMax)  {
+			##t=tickcount;
+			call InsertCommentSection ##i;
+			debuginfo $SecName[##i]+" : "+str(tickcount-##t);
+			##i=##i+1;
+		}
+	}
+return;
+
+//.----- 初期化・後始末 ------------------------------------------------------
+initialize: 	// 初期化
+	loaddll hidemarudir + "\\hmjre.dll";
+	if (!result) {
+		message "HmJre.dll がロードできません\n秀丸エディタ v7.0 以上をインストールしてください";
+		endmacro;
+	}
+	if (rightstr(hex(dllfunc("JreGetVersion")), 4) < "0190") {
+		message "HmJre.dll のバージョンが古いです\n秀丸エディタ v7.0 以上をインストールしてください";
+		endmacro;
+	}
+
+	setcompatiblemode 0x20F;
+	$title = basename2 + " -- 強調表示ファイルにコメントを追加";
+	title $title;
+	disabledraw;
+	#x=x; #y=y;
+	$replacebuffer=replacebuffer;
+	$searchbuffer=searchbuffer;
+	#searchoption=searchoption;
+	if (800 <= version)	{
+		#searchoption2=searchoption2;
+		disablehistory 0xFF;
+	}
+	begingroupundo;
+return;
+
+finalize:		// 後始末
+	if (strlen(loaddllfile))  freedll;
+	gofiletop;
+	escape;
+	escapeinselect;
+	setreplace $replacebuffer;
+	if (800 > version)	setsearch $searchbuffer, #searchoption;
+	else				setsearch $searchbuffer, #searchoption, #searchoption2;
+	endgroupundo;
+	title 0;
+	enabledraw;
+return;
+
+InitBuf:		// グローバルバッファ初期化
+	$$h="([0-9A-F]+)";							// 0  FFFFFF
+	$$qs="(\"\"|\".*?([^\\\\]\"|\\\\\\\"))";	// "aaa" "a,a" "\"aaa\""
+
+	//******  グローバルバッファ ******
+	#iHilight = 0;			$SecName[#iHilight ] = "";
+	#iColorSet= 1;			$SecName[#iColorSet] = "ColorSet";
+	#iColSetEx= 2;			$SecName[#iColSetEx] = "ColorSetEx";
+	#iHilightM= 3;			$SecName[#iHilightM] = "HilightMulti";
+	#iTreeWord= 4;			$SecName[#iTreeWord] = "TreeWord";
+	#iDefine  = 5;			$SecName[#iDefine  ] = "(Defines|Ifvalue).*";
+	#iMax	  = #iDefine;
+
+	$linePtn[#iHilight ]="^[0-9]+,.+";									// 強調表示
+	$linePtn[#iColorSet]="^/\\[([0-9]+)\\]\\[([0-2])\\]:(0x[0-9A-F]+)"; // カラーセット
+	$linePtn[#iColSetEx]="^/(.+?)(Color|Back)Ex:(0x[0-9A-F]+)";			// 拡張カラー  		2020.05.31
+	$linePtn[#iHilightM]="^/"+$$h +","+$$h+","+$$h+","+$$h+","+$$h+","	// 複数行の強調
+							 +$$qs+","+$$h+","+$$qs;
+	$linePtn[#iTreeWord]="^/"+$$h+"," +$$h+","+$$h+","+$$h+","+$$h+","	// ツリー定義
+							 +$$qs+","+$$qs;
+	$EnablePtn= "^//[ \t]*" 							// 有効なコメント行パターン
+			 + "(/<.+>"
+			 + "|[0-9]+,.+"
+			 + "|/\\[[0-9]+\\]\\[[0-2)\\]:0x[0-9A-F]+"
+			 + "|[^/]+?(Color|Back)Ex:0x[0-9A-F]+"
+			 + "|/([0-9A-F]+,){5}(\"\"|\".*?([^\\\\]\"|\\\\\\\")),[0-9A-F]+,(\"\"|\".*?([^\\\\]\"|\\\\\\\"))"
+			 + "|/([0-9A-F]+,){5}(\"\"|\".*?([^\\\\]\"|\\\\\\\")),(\"\"|\".*?([^\\\\]\"|\\\\\\\"))"
+			 + "|/\".*\")";
+
+	//******  iniファイルから情報読み込み ******
+	//	項目設定
+	##i=0;
+	while(##i<=#iMax)  {
+		if		(##i == #iHilight)	$$section="Hilight";
+		else if (##i == #iDefine)	$$section="Defines";
+		else						$$section=$SecName[##i];
+		#InsertEnable[##i][0]=getininum($inifile,$$section,"InsertHeader");
+		#InsertEnable[##i][1]=getininum($inifile,$$section,"InsertComment");
+
+		if (#InsertEnable[##i][0]) {
+			$HeaderFile[##i]=getinistr($inifile,$$section,"HeaderFile");
+			if (!existfile($HeaderFile[##i]))
+				$HeaderFile[##i] = currentmacrodirectory+"\\"+$HeaderFile[##i];
+		}
+		##i=##i+1;
+	}
+
+	// 項目別定義
+	##f=0x3;	##i=0;
+	$$csptn="([\\-0-9]+)[ \\t]*?,[ \\t]*?([\\-0-9]+)[ \\t]*?,[ \\t]*?([\\-0-9]+)[ \\t]*?,[ \\t]*?\"(.*)\"";
+	$$section = "Define_ColorSet";
+	while(##f != 0)    {
+		// ColorSet の場所とスタイル
+		if (##f&0x01)	{
+			$$buf=getinistr($inifile,$$section,"Place"+str(##i));
+			if(0<=dllfunc("FindRegular",$$csptn,$$buf))  {
+				#ColorFlg[##i][0]=val(midstr($$buf,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1)));
+				#ColorFlg[##i][1]=val(midstr($$buf,dllfunc("GetLastMatchTagPosition",2),dllfunc("GetLastMatchTagLength",2)));
+				#ColorFlg[##i][2]=val(midstr($$buf,dllfunc("GetLastMatchTagPosition",3),dllfunc("GetLastMatchTagLength",3)));
+				$ColorPlaceStr[##i]=midstr($$buf,dllfunc("GetLastMatchTagPosition",4),dllfunc("GetLastMatchTagLength",4));
+			}else if (!strlen($$buf))			##f = ##f & (0xFF^0x01);
+		}
+		if (##f&0x02)	{
+			$ColorStyleStr[##i] = getinistr($inifile,$$section,"Style"+str(##i));
+			if (!strlen($ColorStyleStr[##i]))	##f = ##f & (0xFF^0x02);
+		}
+		##i=##i+1;
+	}
+return;
+
+
+BeginCheck: 	// 戻り値 0:キャンセル 1:続行
+	// ファイルタイプチェック
+	if (filetype != ".hilight")   {
+		searchdown "^[0-9]+,.+|^/<.*>", regular,loop;
+		if (!result)	{
+			message "このファイルは強調表示ファイルではないようです。";
+			return 0;
+		}
+	}
+
+	// 既にコメントが存在するときはメニュー出して処理問い合わせ
+	call _DeleteComentCheck;
+	if (##return) {
+		$mnu[0] = "■■ "+basename2+" は、既にコメントが存在するようです。■■";
+		$mnu[1] = "----------------------------------------------------";
+		if (800 <= version)		$mnu[1]="\x01";
+		$mnu[2] = " &1. コメント除去";
+		$mnu[3] = " &2. コメントを除去して続行";
+		$mnu[4] = " &3. そのまま続行";
+		$mnu[5] = " &4. キャンセル";
+
+		moveto #x , #y;
+		enabledraw;
+		call ShowMenu 6,2;
+		disabledraw;
+		##ret = ##return;
+		if (1+2==##ret || 2+2==##ret) {
+			call _DeleteComentCheck 1;
+			gofiletop;
+			enabledraw;
+			disabledraw;
+		}
+		if (0==##ret || 1+2==##ret || 4+2==##ret) return 0;
+	}
+return 1;
+
+_DeleteComentCheck:   // コメントの検出 | 除去
+	//	##1 		= 0:チェック 1:デリート
+	//	$EnablePtn	= 有効行を一時的にコメントアウトしてあるパターン検出用
+	//	戻り値 1: 説明書きっぽいコメントあり
+
+	// 設定を一時的にコメントアウトしてあるような行は極力残し
+	// 説明書きっぽいコメントだけ除去する
+
+	gofiletop;
+	searchdown2 "^//.*$", regular;
+	while(result)	{
+		searchdown2 $EnablePtn, regular, nocasesense, inselect;
+		if		(result)	   down;
+		else if (##1)	{
+			deleteline;
+			while (1<lineno && 0==strlen(gettext2(0,lineno-1,1,lineno-1)))	 {
+				up; deleteline;
+			}
+		}else			 return 1;
+		golinetop2;
+		searchdown2 "^//.*$", regular;
+	}
+return 0;
+
+//.-------- 実行ルーチン -----------------------------------------------------
+
+InsertCommentSection:	// コメント挿入ルーチン
+	//	##1 = 項目別index
+	//
+	//	$SecName[##1]		= 項目名称
+	//	$linePtn[##1]		= 項目別行検索パターン
+	//	$HeaderFile[##1]	= 挿入用ヘッダファイルパス
+	//	#InsertEnable[##1][]= コメント挿入フラグ 0:ヘッダコメント 1:行コメント
+	//	#EnablePtn			= 有効行コメントパターン
+
+	title $title + " : " + $SecName[##1];
+
+	// ==== 項目存在確認 & 項目タイトルコメント挿入 ====
+	if (##1==#iHilight) $$settop=$linePtn[#iHilight];	   // ノーマル強調表示領域
+	else	{			$$settop="^/<"+$SecName[##1]+">";  // その他のセクション
+						##offset= 1; }
+	searchdown $$settop,regular,nocasesense,loop;
+	if (!result)		return;
+
+	if (#InsertEnable[##1][0]) {
+		if (##1==#iHilight) gofiletop;
+		else				golinetop2;
+		$$buf=gettext2(0,lineno-##offset,2000,lineno-##offset);
+		// 既に項目前に説明的コメントが入ってそうだったら何もしない
+		if (0<=dllfunc("FindRegular","^//.*$",$$buf)){
+			if (0>dllfunc("FindRegularNoCaseSense",$EnablePtn,$$buf))	##comp=1;
+		}
+		if (0==##comp && existfile($HeaderFile[##1])) insertfile $HeaderFile[##1];
+	}
+
+	// ==== 有効行解析 & コメントセット ====
+	if (#InsertEnable[##1][1]) {
+		escape;
+		escapeinselect;
+		if (##1==#iHilight) 	gofiletop;
+		else					searchdown $$settop,regular,nocasesense,loop;
+		beginsel;
+		searchdown ".*(?=^/<)",regular;
+		if (!result)	gofileend;
+		searchdown2 "^//[ \t]*.+|" + $linePtn[##1] ,regular,nocasesense,inselect;
+		while(result){
+			title $title + " : " + $SecName[##1]+ " " + str(lineno);
+
+			$hit = gettext(foundtopx,foundtopy,foundendx,foundendy);
+			##p=dllfunc("FindRegular","(?<=^//[ \t]*).*",$hit);
+			if (0<=##p) 	$hit = midstr($hit,##p,dllfunc("GetLastMatchLength"));
+			if (0>dllfunc("FindRegularNoCaseSense",$linePtn[##1],$hit))
+				$$cmt_sav = gettext2(0,lineno,linecount2,lineno);
+			else  if (0>##p)  {
+				if (##1 == #iHilight)	call MakeComment_Hilight;
+				if (##1 == #iColorSet)	call MakeComment_ColorSet;
+				if (##1 == #iColSetEx)	call MakeComment_ColorSetEx;
+				if (##1 == #iHilightM)	call MakeComment_HilightM;
+				if (##1 == #iTreeWord)	call MakeComment_TreeWord;
+
+				// コメント挿入
+				if (strlen($$return))	{
+					if (0>strstr($$cmt_sav,$$return))  {
+						escape;
+						golinetop2;
+						insert "\r\n// " + $$return + "\r\n";
+						$$cmt_sav=$$return;
+					}
+				}
+				if (#line_offset)	movetolineno 1,lineno+#line_offset;
+				#line_offset=0;
+			}
+			finddown;
+		}
+	}
+return;
+
+MakeComment_Hilight:	//	強調表示		 項目用コメントを作成して返す
+	//		$hit = 対象行
+
+	// 強調表示 (マクロヘルプ : loadhilight)
+	// 参考 : http://hidemaru.dohow.jp/blog/2007/12/post-5.html
+
+	##n1=val(leftstr($hit,strstr($hit,",")));
+	if (##n1 == #n1_sav)	return "";
+	#n1_sav = ##n1;
+
+	call bitShiftRight ##n1&0x1C0, 6;	   //  連番 	bit6-8
+	##no = ##return+1;
+
+	// 強調種別 bit0-2
+	if		(##n1&0x07 == 0x1)	$$buf1 = "強調"    +str(##no)+"    ";
+	else if (##n1&0x07 == 0x3) {
+		 if (5<=##no)			$$buf1 = "強調"    +str(##no)+"    ";
+		 else					$$buf1 = "特に強調"+str(##no);		}
+	else if (##n1&0x07 == 0x5)	$$buf1 = "行の強調"+str(##no);
+
+	// 検索方法 bit3-5
+	if (##n1 & 0x08) 		$$buf2 =			"大小区別なし";
+	else					$$buf2 =			"   普 通    ";
+	if (##n1 & 0x10)		$$buf2 = $$buf2 +	"  正規表現  ";
+	if (##n1 & 0x20)		$$buf2 = $$buf2 +	" 単語の検索 ";
+
+return "	" + $$buf1 + "	[" + $$buf2 + "]";
+
+MakeComment_ColorSet:	//	カラーセット	 項目用コメントを作成して返す
+	//		$hit			= 対象行
+	//		$linePtn[]		= 項目別行検索パターン
+	//		$ColorPlaceStr[]= 場所の名前
+	//	out #line_offset	= 行オフセット
+
+	// /<ColorSet>
+	// カラー行書式  "/[n1][n2]:0x00000000" (n3)
+	// 参照: マクロヘルプ configcolor の項
+
+	##n1=val(midstr($hit,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1)));
+	##i=0;	##cnt=3;	$$cmt = $ColorPlaceStr[##n1] + " : ";
+	while(0<##cnt && linelen+##i<=linecount2) {
+		if (0<=dllfunc("FindRegularNoCaseSense",$linePtn[#iColorSet],$hit))    {
+			if (##n1!=val(midstr($hit,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1)))) break;
+			call _GetColorsetStr ##n1
+				,val(midstr($hit,dllfunc("GetLastMatchTagPosition",2),dllfunc("GetLastMatchTagLength",2)))
+				,midstr($hit,dllfunc("GetLastMatchTagPosition",3),dllfunc("GetLastMatchTagLength",3));
+			$$cmt=$$cmt+$$return;
+			##cnt=##cnt-1;
+			#line_offset=##i;
+		}
+		##i=##i+1;
+		$hit=gettext2(0,lineno+##i,2000,lineno+##i);
+	}
+return $$cmt;
+
+_GetColorsetStr:		// カラーセット用のコメントメッセージを作成
+	//	##1 = n1
+	//	##2 = n2
+	//	$$3 = n3 (0x00BBGGRR)
+	//	#ColorFlg[##1][##2] = 指定の場所の色/スタイルの有効無効 0:無効 1:有効
+
+	##n3 = val($$3);
+	if (##2<=1) {
+		if		(0 == #ColorFlg[##1][##2])	$$buf = "";
+		else if (##n3  & 0x02000000)		$$buf = "  透 明";
+		else if (##n3 == 0x01000008)		$$buf = "システム文字";
+		else if (##n3 == 0x01000005)		$$buf = "システム背景";
+		else if (##n3 == 0x0100000E)		$$buf = "システム選択文字";
+		else if (##n3 == 0x0100000D)		$$buf = "システム選択";
+		else								$$buf = "   "+str(val("0x"+midstr($$3,8,2)))+" "+str(val("0x"+midstr($$3,6,2)))+" "+str(val("0x"+midstr($$3,4,2)));
+		if (#ColorFlg[##1][##2+1])			$$buf=leftstr($$buf+"                ",16)+" / ";
+	}
+	else if(#ColorFlg[##1][2])				$$buf=$ColorStyleStr[##n3];
+return $$buf;
+
+MakeComment_ColorSetEx: //	拡張カラーセット 項目用コメントを作成して返す
+	//		$hit			= 対象行
+	//		$linePtn[]		= 項目別行検索パターン
+	//	out #line_offset	= 行オフセット
+
+	//	/<ColorSetEx>
+	//	拡張カラー情報定義 "(PlaceName)ColorEx:0x00000000"
+	//		/CurLineColorEx	 : カーソル行	0x01000008 : システム文字色
+	//										0x01000005 : システム背景色
+	//		/RulerColorEx	 : ルーラー色	0xFFFFFFFF : 文字と同じ(透過)
+	//		/RulerBackEx 	 : ルーラー背景 0xFFFFFFFF : 背景と同じ
+
+	$$place=midstr($hit,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1));
+	if (0==strstr($$place,"CurLine")) {
+		##cnt=1;
+		$$cmt="カーソル行              : ";			// 2020.05.31
+	}
+	else {
+		##cnt=2;
+		if (0==strstr($$place,"Ruler"))
+			$$cmt="ルーラー                : ";		// 2020.05.31
+	}
+	##i=0;
+	while(0<##cnt && linelen+##i<=linecount2) {
+		if (0<=dllfunc("FindRegularNoCaseSense",$linePtn[#iColSetEx],$hit))    {
+			if (0!=strstr($$place,midstr($hit,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1))))
+				break;
+			$$c    = midstr($hit,dllfunc("GetLastMatchTagPosition",3),dllfunc("GetLastMatchTagLength",3));
+			##color=val($$c);
+			if		(##color == 0xFFFFFFFF) {
+				if	(0<strstr($hit,"Color"))	$$buf = "文字と同じ";
+				else							$$buf = "背景と同じ";
+			}else if(##color == 0x01000008) 	$$buf = "システム文字";
+			 else if(##color == 0x01000005) 	$$buf = "システム背景";
+			 else
+				$$buf = str(val("0x"+midstr($$c,8,2)))+" "+str(val("0x"+midstr($$c,6,2)))+" "+str(val("0x"+midstr($$c,4,2)));
+			if (0==##i)			$$cmt=$$cmt+$$buf;				// 2020.05.31
+			else				$$cmt=$$cmt+"\t / "+$$buf;
+			##cnt=##cnt-1;
+			#line_offset=##i;
+		}
+		##i=##i+1;
+		$hit=gettext2(0,lineno+##i,2000,lineno+##i);
+	}
+return $$cmt;
+
+MakeComment_HilightM:	//	複数行の強調	 項目用コメントを作成して返す
+	// $hit  = 対象行
+
+	##n1 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",1),dllfunc("GetLastMatchTagLength",1)));
+	##n2 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",2),dllfunc("GetLastMatchTagLength",2)));
+	##n3 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",3),dllfunc("GetLastMatchTagLength",3)));
+	##n4 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",4),dllfunc("GetLastMatchTagLength",4)));
+	##n5 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",5),dllfunc("GetLastMatchTagLength",5)));
+	##n7 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",7),dllfunc("GetLastMatchTagLength",7)));
+
+	//	n1 = 表示方法
+	// 基本は ColorSetのインデクス番号と同じ
+	// 強調5～8, 行の強調3/4, 特に強調3/4 は-7ずつずれている
+	if (0x1d<=##n1) 	##n1 = ##n1+7;
+	$$cmt = leftstr($ColorPlaceStr[##n1],10) + " : ";
+
+	// n2 = 種類
+	if		(##n2&0x07 == 2)	$$cmt = $$cmt+"複数行    ";
+	else if (##n2&0x07 == 3)	$$cmt = $$cmt+"単一行行末";
+	else if (##n2&0x07 == 4)	$$cmt = $$cmt+"単一文字列";
+	else if (##n2&0x07 == 0)	$$cmt = $$cmt+"次の行から";
+
+	// --- (ここから非固定長メッセージ) ---
+	//	後ろに.つけてるのはstrstrで一致文字列とみなされるとコメント省略されるから
+
+	// n5 = 開始検索オプション (OR)
+	call _GetSearchOptStr ##n5;
+	$$cmt = $$cmt+" . 開始["+$$return+"] ";
+
+	// n7 = 終了検索オプション (OR)
+	if (##n2&0x07 == 2 || ##n2&0x07 == 0)	{
+		call _GetSearchOptStr ##n2;
+		$$cmt = $$cmt+". 終了["+$$return+"] ";
+
+		if (##n5 & 0x8) 		$$cmt = $$cmt+". 開始タグを終了でも使う ";		else $$cmt = $$cmt+".";
+	}else $$cmt = $$cmt+".";
+	// オプション
+	if	(##n3 == 2) 			$$cmt = $$cmt+". 終了2回ヒット ";				else $$cmt = $$cmt+".";
+	if	(##n2 & 0x200)			$$cmt = $$cmt+". HTMLのカラー表示 ";			else $$cmt = $$cmt+".";
+	if	(##n4 != 0) 			$$cmt = $$cmt+". エスケープ ["+char(##n4)+"] "; else $$cmt = $$cmt+".";
+return $$cmt;
+
+_GetSearchOptStr:		// 検索オプション用のコメントメッセージを作成して返す
+	// ##1	= 検索オプションバッファ
+
+	if (##1 & 0x2)			$$buf =			"大小なし ";
+	else					$$buf =			" 普 通   ";
+	if (##1 & 0x4)			$$buf = $$buf +	"単語 ";
+	if (##1 & 0x1)			$$buf = $$buf +	"正規 ";
+return leftstr($$buf+"              ",18);
+
+MakeComment_TreeWord:	//	ツリー定義		 項目用コメントを作成して返す
+	// $hit  = 対象行
+	
+	##n2 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",2),dllfunc("GetLastMatchTagLength",2)));
+	##n4 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",4),dllfunc("GetLastMatchTagLength",4)));
+	##n5 = val("0x"+midstr($hit,dllfunc("GetLastMatchTagPosition",5),dllfunc("GetLastMatchTagLength",5)));
+	$$s7 = midstr($hit,dllfunc("GetLastMatchTagPosition",7),dllfunc("GetLastMatchTagLength",7));
+
+//	   (レベル表記すると1行ごとにコメントついてうざくなるので省略)
+//	  //  n1 = レベル
+//	  $$cmt = "LV"+rightstr(" "+str(##n1),2)+ " : ";
+
+	// n2 = 種類											 123456789012345678
+	if		(##n2&0x07 == 0)	$$cmt = $$cmt+"強調表示   : ";
+	else if (##n2&0x07 == 1)	$$cmt = $$cmt+"関数       : [    C言語 / Java  ] ";
+	else if (##n2&0x07 == 2)	$$cmt = $$cmt+"文字列     : ";
+	else if (##n2&0x07 == 3)	$$cmt = $$cmt+"行頭文字列 :                  ";
+	else if (##n2&0x07 == 4)	$$cmt = $$cmt+"行頭の記号 :                  ";
+
+	// n4 = 強調表示オプション (OR)
+	if (##n2&0x07==0)	 {				  // 123456789012345678 			 1234
+		if (##n4 & 0x000001)	{	$$buf = "   行の強調1      ";	$$c=	"行1 "; }
+		if (##n4 & 0x000080)	{	$$buf = "   行の強調2      ";	$$c=$$c+"行2 "; }
+		if (##n4 & 0x000800)	{	$$buf = "   行の強調3      ";	$$c=$$c+"行3 "; }
+		if (##n4 & 0x001000)	{	$$buf = "   行の強調4      ";	$$c=$$c+"行4 "; }
+		if (##n4 & 0x000004)	{	$$buf = "   特に強調1      ";	$$c=$$c+"特1 "; }
+		if (##n4 & 0x000100)	{	$$buf = "   特に強調2      ";	$$c=$$c+"特2 "; }
+		if (##n4 & 0x002000)	{	$$buf = "   特に強調3      ";	$$c=$$c+"特3 "; }
+		if (##n4 & 0x004000)	{	$$buf = "   特に強調4      ";	$$c=$$c+"特4 "; }
+		if (##n4 & 0x000008)	{	$$buf = "   URL/Email      ";	$$c=$$c+"URL "; }
+		if (##n4 & 0x000010)	{	$$buf = "   ファイル名     ";	$$c=$$c+"Fil "; }
+		if (##n4 & 0x800000)	{	$$buf = " 検索文字列を強調 ";	$$c=$$c+"検策"; }
+
+		if		(4 ==strlen($$c))	$$cmt = $$cmt+"["+$$buf+"] ";
+		else if (14 >strlen($$c))	$$cmt = $$cmt+"["+leftstr($$c+"              ",14)+"] ";
+		else						$$cmt = $$cmt+"["+$$c+"] ";
+	}
+
+	// 文字列の検索オプション (OR)
+	if (##n2&0x07==2)	 {
+		call _GetSearchOptStr ##n5;
+		$$cmt = $$cmt+"["+$$return+"] ";
+	}
+
+	// n5 = オプション
+	if		(##n5&0x180 == 0x100)	$$cmt = $$cmt+". 展開状態[ 標 準  ] ";
+	else if (##n5&0x180 == 0x000)	$$cmt = $$cmt+". 展開状態[初期折り] ";
+	else if (##n5&0x180 == 0x180)	$$cmt = $$cmt+". 展開状態[展開固定] ";
+
+	if		(##n5&0xE00 == 0x000)	$$cmt = $$cmt+". 表示範囲[  自 動    ] ";
+	else if (##n5&0xE00 == 0x200)	$$cmt = $$cmt+". 表示範囲[HIT文字以降] ";
+	else if (##n5&0xE00 == 0x800)	$$cmt = $$cmt+". 表示範囲[HIT文字後  ] ";
+	else if (##n5&0xE00 == 0x400)	$$cmt = $$cmt+". 表示範囲[HIT文字のみ] ";
+	else if (##n5&0xE00 == 0x600)	$$cmt = $$cmt+". 表示範囲[  行全体   ] ";
+	else if (##n5&0xE00 == 0xA00)	$$cmt = $$cmt+". 表示範囲[次の行全体 ] ";
+
+	// --- (ここから非固定長メッセージ) ---
+	//	後ろに.つけてるのはstrstrで一致文字列とみなされるとコメント省略されるから
+
+	if (##n5 & 0x80000) $$cmt = $$cmt+". インデント禁止 ";				else $$cmt = $$cmt+".";
+	if (##n5 & 0x00040) $$cmt = $$cmt+". インデントでレベル決め ";		else $$cmt = $$cmt+".";
+	if (##n5 & 0x02000) $$cmt = $$cmt+". ↑と同レベル ";				else $$cmt = $$cmt+".";
+	if (##n5 & 0x01000) $$cmt = $$cmt+". コメント無視 ";				else $$cmt = $$cmt+".";
+
+	if (##n5 & 0x04000) $$cmt = $$cmt+". 自動選択/部分編集[非]対象 ";	else $$cmt = $$cmt+".";
+	if (##n5 & 0x08000) $$cmt = $$cmt+". 見出しバー[非]対象 ";			else $$cmt = $$cmt+".";
+
+	// ツリーの動作
+	if (##n5&0x10 == 0) $$cmt = $$cmt+". ツリー[絶対] ";				else $$cmt = $$cmt+".";
+	if (##n5&0x03F00000 != 0) {
+		  call bitShiftRight ##n5&0x03F00000, 20;
+		  $$cmt = $$cmt+". 行頭無効行["+str(##return)+"] ";
+	}else $$cmt = $$cmt+".";
+
+	// "s7" = "グループ名"
+	if (##n2&0x07 != 1 && 2<strlen($$s7))
+		 $$cmt = $$cmt+". グループ名 ["+midstr($$s7,1,strlen($$s7)-2)+"] ";
+	else $$cmt = $$cmt+".";
+
+return $$cmt;
+
+//.-------- 汎用っぽいルーチン ---------------------------------------------------------
+ShowMenu:			// メニュー表示
+	//	$mnu[] = メニュー文字列
+	//	##1    = メニュー数
+	//	##2    = メッセージ行数 (選択不可にする)
+	menuarray $mnu,##1;
+	if (0!=result && ##2>=result)	goto ShowMenu;
+return result;
+
+bitShiftRight:	// ビットシフト >>
+	//	##1 = 対象数値
+	//	##2 = シフトしたい数
+	##r = 1;
+	while(##2>0) {
+		##r = ##r * 2;
+		##2 = ##2 - 1;
+	}
+	if (##1 < 0)  return (##1 + 1) / ##r - 1;
+return ##1 / ##r;
